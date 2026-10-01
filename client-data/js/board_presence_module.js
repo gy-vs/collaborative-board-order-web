@@ -559,7 +559,7 @@ function getBatchFocusPoint(dom, children) {
   let bounds = null;
   children.forEach((child) => {
     const targetId =
-      child.type === MutationType.UPDATE
+      child.type === MutationType.UPDATE || child.type === MutationType.REORDER
         ? child.id
         : child.type === MutationType.COPY
           ? child.newid

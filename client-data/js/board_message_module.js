@@ -97,7 +97,8 @@ export function createUnreadCountHook(messages) {
     if (
       document.hidden &&
       mutationType !== MutationType.APPEND &&
-      mutationType !== MutationType.UPDATE
+      mutationType !== MutationType.UPDATE &&
+      mutationType !== MutationType.REORDER
     ) {
       messages.newUnreadMessage();
     }

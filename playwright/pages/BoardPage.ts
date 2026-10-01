@@ -966,6 +966,82 @@ window.turnstile = {
     }, message);
   }
 
+  /**
+   * Activates the hand selector secondary mode and selects the given element
+   * without moving it.
+   */
+  async selectElementWithHand(id: string) {
+    await this.waitForBoardWritable();
+    await this.page.evaluate(
+      ({ targetId }) => {
+        const element = document.getElementById(targetId);
+        if (!(element instanceof SVGGraphicsElement))
+          throw new Error(`Missing shape ${targetId}`);
+        const tool = window.WBOApp.toolRegistry.current;
+        if (!tool || tool.name !== "hand")
+          throw new Error("Hand tool is not current");
+        if (tool.secondary && !tool.secondary.active) tool.secondary.switch();
+        const bbox = element.getBBox();
+        const x = bbox.x + bbox.width / 2;
+        const y = bbox.y + bbox.height / 2;
+        const event = new MouseEvent("mousedown", {
+          bubbles: true,
+          cancelable: true,
+        });
+        Object.defineProperty(event, "target", { value: element });
+        tool.listeners.press?.(x, y, event, false);
+        tool.listeners.release?.(x, y, event, false);
+      },
+      { targetId: id },
+    );
+    await expect(
+      this.page.locator("#selectionButton-scaleHandle"),
+    ).toBeVisible();
+  }
+
+  async clickSelectionButton(name: string) {
+    const button = this.page.locator(`#selectionButton-${name}`);
+    await expect(button).toBeVisible();
+    await button.click();
+  }
+
+  /**
+   * Reads the stacking order of drawing-area elements as their DOM id order.
+   *
+   * @param {string} [tagName] optional tag filter, e.g. "rect" or "text"
+   */
+  async readDrawingOrder(tagName?: string): Promise<string[]> {
+    return this.page.evaluate((tag) => {
+      const selector = tag ? `#drawingArea ${tag}` : "#drawingArea > *";
+      return Array.from(document.querySelectorAll(selector)).map(
+        (element) => element.id,
+      );
+    }, tagName);
+  }
+
+  /**
+   * The id of the topmost element at a board-space point, or null.
+   */
+  async elementAtBoardPoint(point: Point): Promise<string | null> {
+    return this.page.evaluate(({ x, y }) => {
+      const viewport =
+        window.WBOApp.viewportState.controller.boardRectToViewportRect({
+          x,
+          y,
+          width: 0,
+          height: 0,
+        });
+      const pointElement = document.elementFromPoint(
+        viewport.left,
+        viewport.top,
+      );
+      const area = document.getElementById("drawingArea");
+      return pointElement && pointElement.id && area?.contains(pointElement)
+        ? pointElement.id
+        : null;
+    }, point);
+  }
+
   async drawRectangle(color: string, start: Point, end: Point, size = 11) {
     await this.waitForBoardWritable();
     await this.page.evaluate(

@@ -36,7 +36,7 @@ import { Cursor, TOOLS } from "../../client-data/tools/index.js";
 /** @typedef {{[key: string]: FieldSpec}} FieldSchema */
 /** @typedef {{[tool: number]: {[type: number]: FieldSchema}}} LiveToolSchemas */
 /** @typedef {import("../../client-data/tools/shape_contract.js").ToolContract} ToolContract */
-/** @typedef {"id" | "coord" | "color" | "size" | "opacity" | "text" | "transform" | "time" | "toolId"} SchemaFieldType */
+/** @typedef {"id" | "coord" | "color" | "size" | "opacity" | "text" | "transform" | "time" | "toolId" | "reorderPosition"} SchemaFieldType */
 
 const MAX_TOOL_CODE = TOOLS.length;
 const SHAPE_CONTRACTS = TOOLS.filter((tool) => tool.shapeTool === true);
@@ -234,6 +234,16 @@ function normalizeTransform(value) {
 }
 
 /**
+ * @param {unknown} value
+ * @returns {ValidationResult<"front" | "back">}
+ */
+function normalizeReorderPosition(value) {
+  return value === "front" || value === "back"
+    ? accepted(value)
+    : rejected("invalid reorder position");
+}
+
+/**
  * @param {unknown} raw
  * @param {FieldSchema} fields
  * @param {number} maxBoardSize
@@ -305,6 +315,8 @@ function buildSchemaField(type, optionalField) {
       return make(normalizeTime);
     case "toolId":
       return make(normalizeToolId);
+    case "reorderPosition":
+      return make(normalizeReorderPosition);
   }
 }
 

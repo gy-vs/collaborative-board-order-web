@@ -151,6 +151,42 @@ function finalizePersistedCanonicalItems(
   };
 }
 
+/**
+ * Moves a contiguous group of live items to the front or back of the paint
+ * order while keeping their relative order.
+ *
+ * @param {{
+ *   itemsById: Map<string, any>,
+ *   paintOrder: string[],
+ * }} state
+ * @param {string[]} ids
+ * @param {"front" | "back"} position
+ * @returns {boolean} true when at least one item changed position
+ */
+function reorderCanonicalItems(state, ids, position) {
+  const movingIds = /** @type {string[]} */ ([]);
+  for (const id of ids) {
+    const item = state.itemsById.get(id);
+    if (!item || item.deleted === true) {
+      throw new Error("reorder: object not found");
+    }
+    if (!movingIds.includes(id)) movingIds.push(id);
+  }
+  if (movingIds.length === 0) return false;
+  const moving = new Set(movingIds);
+  // Preserve the group's current relative order: its order on every board is
+  // defined by the paint order, not by each client's selection order.
+  const orderedMovingIds = state.paintOrder.filter((id) => moving.has(id));
+  const remaining = state.paintOrder.filter((id) => !moving.has(id));
+  const nextOrder =
+    position === "front"
+      ? remaining.concat(orderedMovingIds)
+      : orderedMovingIds.concat(remaining);
+  const changed = nextOrder.some((id, index) => state.paintOrder[index] !== id);
+  if (changed) state.paintOrder = nextOrder;
+  return changed;
+}
+
 export {
   authoritativeItemCount,
   cloneBounds,
@@ -158,5 +194,6 @@ export {
   getCanonicalItem,
   rebuildLiveItemCount,
   removeCanonicalItem,
+  reorderCanonicalItems,
   upsertCanonicalItem,
 };

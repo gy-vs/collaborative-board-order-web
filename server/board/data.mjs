@@ -43,6 +43,7 @@ import {
   getCanonicalItem,
   rebuildLiveItemCount,
   removeCanonicalItem,
+  reorderCanonicalItems,
   upsertCanonicalItem,
 } from "./canonical_index.mjs";
 import {
@@ -217,6 +218,7 @@ class BoardData {
     this.nextPaintOrder = 0;
     this.liveItemCount = 0;
     this.trimPaintOrderIndex = 0;
+    this.paintOrderDirty = false;
     /** @type {SvgExtent} */
     this.svgExtent = createDefaultSvgExtent();
     this.disposed = false;
@@ -248,6 +250,7 @@ class BoardData {
     this.saveTargetSeq = null;
     this.liveItemCount = 0;
     this.trimPaintOrderIndex = 0;
+    this.paintOrderDirty = false;
     this.svgExtent = createDefaultSvgExtent();
     let paintOrder = 0;
     for (const [id, item] of Object.entries(value || {})) {
@@ -853,6 +856,61 @@ class BoardData {
     return this.commitMutation();
   }
 
+  /**
+   * Applies an ordered list of reorder instructions as one atomic grouping.
+   * Consecutive instructions for the same side are merged so each client can
+   * send every selected element individually while the selection keeps its
+   * relative order across participants.
+   *
+   * @param {{id: string, position: "front" | "back"}[]} instructions
+   * @returns {ValidationSuccess | ValidationFailure}
+   */
+  applyReorderGroup(instructions) {
+    /** @type {{ids: string[], position: "front" | "back"}[]} */
+    const groups = [];
+    for (const instruction of instructions) {
+      const last = groups[groups.length - 1];
+      if (last && last.position === instruction.position) {
+        if (!last.ids.includes(instruction.id)) last.ids.push(instruction.id);
+      } else {
+        groups.push({ ids: [instruction.id], position: instruction.position });
+      }
+    }
+    for (const group of groups) {
+      const result = this.reorder(group.ids, group.position);
+      if (result.ok === false) return result;
+    }
+    return { ok: true };
+  }
+
+  /**
+   * Moves existing live items to the front or back of the paint order without
+   * changing their content, geometry or identity.
+   *
+   * @param {string[]} ids
+   * @param {"front" | "back"} position
+   * @returns {ValidationSuccess | ValidationFailure}
+   */
+  reorder(ids, position) {
+    let changed = false;
+    try {
+      changed = reorderCanonicalItems(this, ids, position);
+    } catch {
+      return { ok: false, reason: "object not found" };
+    }
+    if (changed) {
+      for (const id of ids) {
+        const item = this.itemsById.get(id);
+        if (item && item.deleted !== true && item.dirty !== true) {
+          this.itemsById.set(id, { ...item, dirty: true });
+        }
+      }
+      this.paintOrderDirty = true;
+      this.delaySave();
+    }
+    return this.commitMutation();
+  }
+
   /** Clear the board of all data
    * @returns {ValidationSuccess}
    */
@@ -866,6 +924,7 @@ class BoardData {
     }
     this.liveItemCount = 0;
     this.trimPaintOrderIndex = this.paintOrder.length;
+    this.paintOrderDirty = false;
     this.svgExtent = createDefaultSvgExtent();
     this.delaySave();
     return this.commitMutation();

@@ -848,7 +848,7 @@ function collectCopySourceIds(itemsById) {
  * @param {Set<string>} persistedItemIds
  * @param {number} persistedSeq
  * @param {number} latestSeq
- * @param {{historyDir?: string, svgExtent?: SvgExtent}=} [options]
+ * @param {{historyDir?: string, svgExtent?: SvgExtent, reorder?: boolean}=} [options]
  * @returns {Promise<Set<string>>}
  */
 async function rewriteStoredSvgFromCanonical(
@@ -874,7 +874,19 @@ async function rewriteStoredSvgFromCanonical(
   const copySourceIds = collectCopySourceIds(itemsById);
   const bufferedTextContents = new Map();
   const bufferedPencilPaths = new Map();
+  // In reorder mode every stored tag is buffered and re-emitted in canonical
+  // paint order at the drawing-area suffix, so on-disk order matches the
+  // accepted stacking order after a reload.
+  const reorderMode = options?.reorder === true;
+  /** @type {Map<string, string>} */
+  const storedEntryTags = new Map();
   const persistedIds = new Set();
+  /** @param {string} chunk @returns {Promise<void>} */
+  const writeChunk = (chunk) =>
+    new Promise((resolve) => {
+      if (output.write(chunk)) resolve();
+      else output.once("drain", resolve);
+    });
   const closeOutput = () =>
     new Promise((resolve, reject) => {
       output.on("error", reject);
@@ -883,36 +895,53 @@ async function rewriteStoredSvgFromCanonical(
 
   try {
     for await (const event of streamStoredSvgStructure(input, {
-      materializeEntryDetails: false,
+      materializeEntryDetails: !!reorderMode,
     })) {
       if (event.type === "prefix") {
         const currentSeq = readStoredSvgRootMetadata(event.prefix).seq;
         if (currentSeq !== persistedSeq) {
           throw createStoredSvgSeqMismatchError(persistedSeq, currentSeq);
         }
-        if (
-          !output.write(
-            updateRootMetadata(
-              event.prefix,
-              metadata,
-              latestSeq,
-              options?.svgExtent,
-            ),
-          )
-        ) {
-          await once(output, "drain");
-        }
+        await writeChunk(
+          updateRootMetadata(
+            event.prefix,
+            metadata,
+            latestSeq,
+            options?.svgExtent,
+          ),
+        );
         continue;
       }
 
       if (event.type === "tail") {
-        if (!output.write(event.chunk)) {
-          await once(output, "drain");
-        }
+        await writeChunk(event.chunk);
         continue;
       }
 
       if (event.type === "suffix") {
+        if (reorderMode) {
+          for (const id of paintOrder) {
+            const item = itemsById.get(id);
+            if (!item || item.deleted === true) continue;
+            let tag = storedEntryTags.get(id);
+            if (tag === undefined) {
+              tag = serializeCanonicalItemForStorage(item, {
+                sourceText: item.copySource
+                  ? bufferedTextContents.get(item.copySource.sourceId)
+                  : undefined,
+                sourcePath: item.copySource
+                  ? bufferedPencilPaths.get(item.copySource.sourceId)
+                  : undefined,
+                isPersistedItem: false,
+              });
+            }
+            if (!tag) continue;
+            persistedIds.add(id);
+            await writeChunk(tag);
+          }
+          await writeChunk(event.suffix);
+          continue;
+        }
         for (const id of paintOrder) {
           const item = itemsById.get(id);
           if (!item || item.deleted === true || persistedItemIds.has(id)) {
@@ -929,13 +958,9 @@ async function rewriteStoredSvgFromCanonical(
           });
           if (!tag) continue;
           persistedIds.add(item.id);
-          if (!output.write(tag)) {
-            await once(output, "drain");
-          }
+          await writeChunk(tag);
         }
-        if (!output.write(event.leadingText + event.suffix)) {
-          await once(output, "drain");
-        }
+        await writeChunk(event.leadingText + event.suffix);
         continue;
       }
 
@@ -964,6 +989,30 @@ async function rewriteStoredSvgFromCanonical(
 
       const item = itemsById.get(id);
       if (!item || item.deleted === true) {
+        continue;
+      }
+
+      if (reorderMode) {
+        // Items not persisted in this file version are serialized at the
+        // suffix like in a normal incremental save.
+        if (persistedItemIds.has(id)) {
+          storedEntryTags.set(
+            id,
+            item.dirty === true
+              ? serializeCanonicalItemForStorage(item, {
+                  sourceText: needsStoredTextSource(item)
+                    ? bufferedTextContents.get(id) ||
+                      readStoredTextContent(event.entry)
+                    : undefined,
+                  sourcePath: needsStoredPencilPath(item, true)
+                    ? bufferedPencilPaths.get(id) ||
+                      readStoredPencilPath(event.entry)
+                    : undefined,
+                  isPersistedItem: true,
+                })
+              : event.entry.raw,
+          );
+        }
         continue;
       }
 

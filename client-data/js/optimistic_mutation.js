@@ -51,6 +51,7 @@ function addOptimisticDependencyIds(ids, message) {
     case MutationType.COPY:
     case MutationType.DELETE:
     case MutationType.UPDATE:
+    case MutationType.REORDER:
       if ("id" in message) ids.add(message.id);
       return;
     case MutationType.APPEND:

@@ -29,7 +29,6 @@ import {
   measureSvgElementBoundsAfterTransform,
 } from "../../js/board_extent.js";
 import { createBoardHtmlOverlay } from "../../js/board_html_overlay.js";
-import { messages as BoardMessages } from "../../js/board_transport.js";
 import { safePreventDefault } from "../../js/board_viewport.js";
 import { logFrontendEvent } from "../../js/frontend_logging.js";
 import MessageCommon from "../../js/message_common.js";
@@ -41,15 +40,17 @@ import { TOOL_CODE_BY_ID } from "../tool-order.js";
 /** @typedef {ReturnType<typeof createUpdateChildMessage>} HandUpdateChildMessage */
 /** @typedef {ReturnType<typeof createDeleteChildMessage>} HandDeleteChildMessage */
 /** @typedef {ReturnType<typeof createCopyChildMessage>} HandCopyChildMessage */
-/** @typedef {HandUpdateChildMessage | HandDeleteChildMessage | HandCopyChildMessage} HandChildMessage */
+/** @typedef {ReturnType<typeof createReorderChildMessage>} HandReorderChildMessage */
+/** @typedef {HandUpdateChildMessage | HandDeleteChildMessage | HandCopyChildMessage | HandReorderChildMessage} HandChildMessage */
 /** @typedef {ReturnType<typeof createBatchMessage>} HandBatchMessage */
 /** @template {HandChildMessage} TChild @typedef {{tool: typeof TOOL_CODE_BY_ID.hand} & TChild} HandSingleMessage */
 /** @typedef {HandSingleMessage<HandUpdateChildMessage>} HandUpdateMessage */
 /** @typedef {HandSingleMessage<HandDeleteChildMessage>} HandDeleteMessage */
 /** @typedef {HandSingleMessage<HandCopyChildMessage>} HandCopyMessage */
-/** @typedef {HandUpdateMessage | HandDeleteMessage | HandCopyMessage | HandBatchMessage} HandDrawMessage */
+/** @typedef {HandSingleMessage<HandReorderChildMessage>} HandReorderMessage */
+/** @typedef {HandUpdateMessage | HandDeleteMessage | HandCopyMessage | HandReorderMessage | HandBatchMessage} HandDrawMessage */
 /** @typedef {HandDrawMessage | HandChildMessage} HandRenderableMessage */
-/** @typedef {{type?: unknown, id?: unknown, transform?: unknown, newid?: unknown, _children?: unknown}} HandMessageCandidate */
+/** @typedef {{type?: unknown, id?: unknown, transform?: unknown, newid?: unknown, position?: unknown, _children?: unknown}} HandMessageCandidate */
 /** @typedef {{x: number, y: number, width: number, height: number}} BoardRect */
 /** @typedef {ReturnType<typeof createBoardHtmlOverlay>} BoardHtmlOverlay */
 /** @typedef {{ name: string, element: HTMLButtonElement, overlay: BoardHtmlOverlay, origWidth: number, origHeight: number, drawCallback: (button: SelectionButton, bbox: {r:[number,number], a:[number,number], b:[number,number]}, scale:number) => BoardRect, clickCallback: (x:number, y:number, evt: { preventDefault(): void }) => void }} SelectionButton */
@@ -80,6 +81,7 @@ export const batchMessageFields = /** @type {const} */ ({
   [MutationType.UPDATE]: { id: "id", transform: "transform" },
   [MutationType.DELETE]: { id: "id" },
   [MutationType.COPY]: { id: "id", newid: "id" },
+  [MutationType.REORDER]: { id: "id", position: "reorderPosition" },
 });
 
 /**
@@ -183,13 +185,28 @@ function isHandCopyChild(child) {
 
 /**
  * @param {unknown} child
+ * @returns {child is HandReorderChildMessage}
+ */
+function isHandReorderChild(child) {
+  const message = handMessageCandidate(child);
+  return !!(
+    message &&
+    message.type === MutationType.REORDER &&
+    typeof message.id === "string" &&
+    (message.position === "front" || message.position === "back")
+  );
+}
+
+/**
+ * @param {unknown} child
  * @returns {child is HandChildMessage}
  */
 function isHandChildMessage(child) {
   return (
     isHandUpdateChild(child) ||
     isHandDeleteChild(child) ||
-    isHandCopyChild(child)
+    isHandCopyChild(child) ||
+    isHandReorderChild(child)
   );
 }
 
@@ -231,6 +248,18 @@ function createCopyChildMessage(id, newid) {
     type: MutationType.COPY,
     id,
     newid,
+  };
+}
+
+/**
+ * @param {string} id
+ * @param {"front" | "back"} position
+ */
+function createReorderChildMessage(id, position) {
+  return {
+    type: MutationType.REORDER,
+    id,
+    position,
   };
 }
 
@@ -278,6 +307,8 @@ function createInitialState(Tools, assetUrl) {
     selectionButtons: /** @type {SelectionButton[]} */ ([]),
     boundDeleteShortcut: /** @type {HandShortcutHandler} */ (() => {}),
     boundDuplicateShortcut: /** @type {HandShortcutHandler} */ (() => {}),
+    boundLayerBackShortcut: /** @type {HandShortcutHandler} */ (() => {}),
+    boundLayerFrontShortcut: /** @type {HandShortcutHandler} */ (() => {}),
     secondary: /** @type {HandSecondary | null} */ (null),
   };
 }
@@ -340,7 +371,7 @@ function createState(Tools, assetUrl) {
       (me, bbox, scale) => {
         const x = selectionActionButtonX(state, bbox.r[0]);
         return {
-          x,
+          x: x + 2 * ((me.origWidth + 2) / scale),
           y: selectionActionButtonY(bbox, me.origHeight, scale),
           width: me.origWidth / scale,
           height: me.origHeight / scale,
@@ -357,7 +388,7 @@ function createState(Tools, assetUrl) {
       (me, bbox, scale) => {
         const x = selectionActionButtonX(state, bbox.r[0]);
         return {
-          x: x + (me.origWidth + 2) / scale,
+          x: x + 3 * ((me.origWidth + 2) / scale),
           y: selectionActionButtonY(bbox, me.origHeight, scale),
           width: me.origWidth / scale,
           height: me.origHeight / scale,
@@ -381,6 +412,40 @@ function createState(Tools, assetUrl) {
       },
       (x, y, evt) => startScalingTransform(state, x, y, evt),
     ),
+    createButton(
+      state,
+      "layerBack",
+      "layer-down",
+      24,
+      24,
+      (me, bbox, scale) => {
+        const x = selectionActionButtonX(state, bbox.r[0]);
+        return {
+          x,
+          y: selectionActionButtonY(bbox, me.origHeight, scale),
+          width: me.origWidth / scale,
+          height: me.origHeight / scale,
+        };
+      },
+      () => reorderSelection(state, "back"),
+    ),
+    createButton(
+      state,
+      "layerFront",
+      "layer-up",
+      24,
+      24,
+      (me, bbox, scale) => {
+        const x = selectionActionButtonX(state, bbox.r[0]);
+        return {
+          x: x + (me.origWidth + 2) / scale,
+          y: selectionActionButtonY(bbox, me.origHeight, scale),
+          width: me.origWidth / scale,
+          height: me.origHeight / scale,
+        };
+      },
+      () => reorderSelection(state, "front"),
+    ),
   ];
   state.blockedSelectionButtons.forEach((buttonIndex) => {
     if (typeof buttonIndex === "number") {
@@ -389,6 +454,8 @@ function createState(Tools, assetUrl) {
   });
   state.boundDeleteShortcut = (e) => deleteShortcut(state, e);
   state.boundDuplicateShortcut = (e) => duplicateShortcut(state, e);
+  state.boundLayerBackShortcut = (e) => layerBackShortcut(state, e);
+  state.boundLayerFrontShortcut = (e) => layerFrontShortcut(state, e);
   state.secondary = Tools.permissions.canEdit
     ? {
         name: "Selector",
@@ -456,6 +523,21 @@ function duplicateSelection(state) {
     const id = selectedElement.id;
     msgs[i] = createCopyChildMessage(id, state.Tools.ids.generateUID(id[0]));
   }
+  state.Tools.writes.drawAndSend(createBatchMessage(msgs));
+}
+
+/**
+ * @param {HandState} state
+ * @param {"front" | "back"} position
+ */
+function reorderSelection(state, position) {
+  if (state.selectedEls.length === 0) return;
+  const selectedIds = state.selectedEls
+    .map((el) => el.id)
+    .filter((id) => state.Tools.board.svg.getElementById(id) !== null);
+  if (selectedIds.length === 0) return;
+  /** @type {HandReorderChildMessage[]} */
+  const msgs = selectedIds.map((id) => createReorderChildMessage(id, position));
   state.Tools.writes.drawAndSend(createBatchMessage(msgs));
 }
 
@@ -1142,6 +1224,52 @@ function getTransformMatrix(state, elem) {
 }
 
 /**
+ * Applies one or more stacking changes to the drawing area. Consecutive
+ * instructions targeting the same side are treated as one group: the group's
+ * relative order follows the current DOM order on the viewing client, so all
+ * participants see the same order regardless of their local selection order.
+ *
+ * @param {HandState} state
+ * @param {HandReorderChildMessage[]} instructions
+ * @returns {void}
+ */
+function applyReorderToDom(state, instructions) {
+  const drawingArea = state.Tools.board.drawingArea;
+  /** @type {{ids: string[], position: "front" | "back"}[]} */
+  const groups = [];
+  for (const instruction of instructions) {
+    const last = groups[groups.length - 1];
+    if (last && last.position === instruction.position) {
+      if (!last.ids.includes(instruction.id)) last.ids.push(instruction.id);
+    } else {
+      groups.push({ ids: [instruction.id], position: instruction.position });
+    }
+  }
+  for (const group of groups) {
+    const wanted = new Set(group.ids);
+    const elements = /** @type {SVGGraphicsElement[]} */ (
+      [...drawingArea.children].filter(
+        (child) => isSelectableElement(child) && wanted.has(child.id),
+      )
+    );
+    if (elements.length === 0) continue;
+    if (group.position === "front") {
+      for (const element of elements) drawingArea.appendChild(element);
+    } else {
+      // Re-anchor after each insertion: moving the first selected element
+      // before the previous one keeps the group's current relative order even
+      // when the original first child is itself part of the group.
+      /** @type {Node | null} */
+      let reference = drawingArea.firstChild;
+      for (const element of elements) {
+        drawingArea.insertBefore(element, reference);
+        reference = element.nextSibling;
+      }
+    }
+  }
+}
+
+/**
  * @param {HandState} state
  * @param {unknown} data
  * @param {boolean} [isLocal]
@@ -1155,7 +1283,25 @@ export function draw(state, data, isLocal = false) {
     return;
   }
   if (isBatchMessage(data)) {
-    BoardMessages.batchCall((msg) => draw(state, msg, isLocal), data._children);
+    const children = data._children;
+    for (let index = 0; index < children.length; ) {
+      const child = children[index];
+      if (child && isHandReorderChild(child)) {
+        const group = [];
+        while (index < children.length && isHandReorderChild(children[index])) {
+          const reorderChild = children[index];
+          if (reorderChild) group.push(reorderChild);
+          index += 1;
+        }
+        applyReorderToDom(
+          state,
+          /** @type {HandReorderChildMessage[]} */ (group),
+        );
+      } else {
+        if (child) draw(state, child, isLocal);
+        index += 1;
+      }
+    }
     return;
   }
 
@@ -1192,6 +1338,13 @@ export function draw(state, data, isLocal = false) {
       );
       newElement.id = data.newid;
       state.Tools.board.drawingArea.appendChild(newElement);
+      break;
+    }
+    case MutationType.REORDER: {
+      applyReorderToDom(
+        state,
+        /** @type {HandReorderChildMessage[]} */ ([data]),
+      );
       break;
     }
     case MutationType.DELETE:
@@ -1338,6 +1491,8 @@ function resetHandUiState(state) {
   hideSelectionUI(state);
   window.removeEventListener("keydown", state.boundDeleteShortcut);
   window.removeEventListener("keydown", state.boundDuplicateShortcut);
+  window.removeEventListener("keydown", state.boundLayerBackShortcut);
+  window.removeEventListener("keydown", state.boundLayerFrontShortcut);
 }
 
 /**
@@ -1405,12 +1560,38 @@ function duplicateShortcut(state, e) {
   }
 }
 
+/**
+ * @param {HandState} state
+ * @param {{ key: string, target: EventTarget | null }} e
+ * @param {"front" | "back"} position
+ */
+function layerShortcut(state, e, position) {
+  if (
+    !isMatchableTarget(e.target) ||
+    !e.target.matches("input[type=text], textarea")
+  ) {
+    reorderSelection(state, position);
+  }
+}
+
+/** @param {HandState} state @param {{ key: string, target: EventTarget | null }} e */
+function layerBackShortcut(state, e) {
+  if (e.key === "[") layerShortcut(state, e, "back");
+}
+
+/** @param {HandState} state @param {{ key: string, target: EventTarget | null }} e */
+function layerFrontShortcut(state, e) {
+  if (e.key === "]") layerShortcut(state, e, "front");
+}
+
 /** @param {HandState} state */
 function switchTool(state) {
   resetHandUiState(state);
   if (isSelectorActive(state)) {
     window.addEventListener("keydown", state.boundDeleteShortcut);
     window.addEventListener("keydown", state.boundDuplicateShortcut);
+    window.addEventListener("keydown", state.boundLayerBackShortcut);
+    window.addEventListener("keydown", state.boundLayerFrontShortcut);
   }
 }
 

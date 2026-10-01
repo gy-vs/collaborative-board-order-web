@@ -14,6 +14,18 @@ function getAttachedBoardDom(Tools) {
   return Tools.dom.status === "attached" ? Tools.dom : null;
 }
 
+/**
+ * @param {LiveBoardMessage | BoardMessage} message
+ * @returns {boolean}
+ */
+function isReorderOnlyMessage(message) {
+  if (!("_children" in message)) return false;
+  return (
+    message._children.length > 0 &&
+    message._children.every((child) => child?.type === MutationType.REORDER)
+  );
+}
+
 export class OptimisticModule {
   /** @param {() => AppToolsState} getTools */
   constructor(getTools) {
@@ -32,6 +44,16 @@ export class OptimisticModule {
       return {
         kind: "drawing-area",
         markup: dom?.drawingArea.innerHTML || "",
+      };
+    }
+    if (isReorderOnlyMessage(message)) {
+      return {
+        kind: "order",
+        orderedIds: dom
+          ? [...dom.drawingArea.children]
+              .map((child) => child.id || "")
+              .filter((id) => id !== "")
+          : [],
       };
     }
     return {
@@ -96,6 +118,30 @@ export class OptimisticModule {
     if (!dom) return;
     if (rollback.kind === "drawing-area") {
       dom.drawingArea.innerHTML = rollback.markup;
+      return;
+    }
+    if (rollback.kind === "order") {
+      const orderedIds = rollback.orderedIds;
+      // Reposition every surviving known element according to the snapshot.
+      // Elements not captured in the snapshot are kept at their relative
+      // positions around the restored group.
+      /** @type {Node | null} */
+      let anchor = /** @type {Node | null} */ (
+        /** @type {unknown} */ (dom.drawingArea.firstChild)
+      );
+      for (const id of orderedIds) {
+        const element = dom.svg.getElementById(id);
+        if (
+          !(element instanceof Element) ||
+          /** @type {Node} */ (element).parentNode !== dom.drawingArea
+        ) {
+          continue;
+        }
+        if (element !== anchor) {
+          dom.drawingArea.insertBefore(element, anchor);
+        }
+        anchor = element.nextSibling;
+      }
       return;
     }
     rollback.snapshots.forEach((snapshot) => {

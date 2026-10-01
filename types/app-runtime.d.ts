@@ -104,6 +104,8 @@ export type HandDeleteChildMessage = HandTool.HandDeleteChildMessage;
 
 export type HandCopyChildMessage = HandTool.HandCopyChildMessage;
 
+export type HandReorderChildMessage = HandTool.HandReorderChildMessage;
+
 export type HandChildMessage = HandTool.HandChildMessage;
 
 export type ToolOwnedChildMessage = HandChildMessage;
@@ -113,6 +115,9 @@ export type HandUpdateMessage = WithMessageMetadata<HandTool.HandUpdateMessage>;
 export type HandDeleteMessage = WithMessageMetadata<HandTool.HandDeleteMessage>;
 
 export type HandCopyMessage = WithMessageMetadata<HandTool.HandCopyMessage>;
+
+export type HandReorderMessage =
+  WithMessageMetadata<HandTool.HandReorderMessage>;
 
 export type HandBatchMessage = WithMessageMetadata<HandTool.HandBatchMessage>;
 
@@ -139,6 +144,7 @@ export type BoardMessage =
   | HandUpdateMessage
   | HandDeleteMessage
   | HandCopyMessage
+  | HandReorderMessage
   | HandBatchMessage
   | ClearMessage
   | CursorMessage;
@@ -487,6 +493,10 @@ export type OptimisticRollback =
   | {
       readonly kind: "items";
       readonly snapshots: readonly OptimisticItemSnapshot[];
+    }
+  | {
+      readonly kind: "order";
+      readonly orderedIds: readonly string[];
     };
 
 export type OptimisticItemIdSet = ReadonlySet<string>;

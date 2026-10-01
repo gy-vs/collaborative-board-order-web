@@ -332,6 +332,7 @@ async function unsafeSaveBoard(board) {
         board.clean();
         const savedItemsById = new Map(board.itemsById);
         const savedPaintOrder = [...board.paintOrder];
+        const savedPaintOrderDirty = board.paintOrderDirty === true;
         const savedSvgExtent = { ...board.svgExtent };
         const file = board.file;
         const authoritativeItemCount = savedPaintOrder.filter(
@@ -339,7 +340,11 @@ async function unsafeSaveBoard(board) {
         ).length;
         const saveTargetSeq = board.saveTargetSeq ?? board.getSeq();
         const saveStrategy =
-          board.persistedItemIds.size > 0 ? "rewrite" : "write";
+          board.persistedItemIds.size > 0
+            ? savedPaintOrderDirty
+              ? "rewrite-ordered"
+              : "rewrite"
+            : "write";
         try {
           const persistedIds = await tracing.withRecordingActiveSpan(
             "board.save_write",
@@ -366,19 +371,34 @@ async function unsafeSaveBoard(board) {
                         svgExtent: savedSvgExtent,
                       },
                     )
-                  : (
-                      await writeCanonicalBoardState(
+                  : saveStrategy === "rewrite-ordered"
+                    ? await rewriteStoredSvgFromCanonical(
                         board.name,
                         savedItemsById,
                         savedPaintOrder,
                         board.metadata,
+                        board.persistedItemIds,
+                        board.getPersistedSeq(),
                         saveTargetSeq,
                         {
                           historyDir: board.historyDir,
                           svgExtent: savedSvgExtent,
+                          reorder: true,
                         },
                       )
-                    ).persistedIds;
+                    : (
+                        await writeCanonicalBoardState(
+                          board.name,
+                          savedItemsById,
+                          savedPaintOrder,
+                          board.metadata,
+                          saveTargetSeq,
+                          {
+                            historyDir: board.historyDir,
+                            svgExtent: savedSvgExtent,
+                          },
+                        )
+                      ).persistedIds;
               if (span) {
                 tracing.setSpanAttributes(
                   span,
@@ -396,6 +416,15 @@ async function unsafeSaveBoard(board) {
           );
           board.persistedItemIds = new Set(persistedIds);
           board.markPersistedSeq(saveTargetSeq);
+          // Only clear the order-dirty flag when no reorder changed the paint
+          // order while this save was in flight; otherwise another ordered
+          // rewrite must persist the newer stacking.
+          if (
+            board.paintOrder.length === savedPaintOrder.length &&
+            board.paintOrder.every((id, index) => id === savedPaintOrder[index])
+          ) {
+            board.paintOrderDirty = false;
+          }
           finalizePersistedItems(board, savedItemsById, persistedIds);
           finishSuccessfulSaveSchedulingWindow(board);
           board.trimPersistedMutationLog(startedAt);
@@ -717,6 +746,7 @@ async function loadBoardData(BoardDataClass, name, config) {
         boardData.saveTargetSeq = null;
         boardData.liveItemCount = 0;
         boardData.trimPaintOrderIndex = 0;
+        boardData.paintOrderDirty = false;
         boardData.svgExtent = createDefaultSvgExtent();
       }
       return boardData;

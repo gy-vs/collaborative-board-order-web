@@ -17,6 +17,7 @@ declare global {
     __downloadAnchorClicks?: number;
     __downloadBlob?: Blob;
     __receivedBroadcasts?: BoardMessage[];
+    __reorderRejected?: boolean;
     __reportedUsers?: ReportUserPayload[];
     __turnstileMock?: {
       callbacks: TurnstileRenderOptions | null;

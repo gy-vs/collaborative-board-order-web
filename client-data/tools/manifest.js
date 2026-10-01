@@ -265,6 +265,7 @@ export const TOOL_MANIFEST = Object.freeze([
       [MutationType.UPDATE]: { id: "id", transform: "transform" },
       [MutationType.DELETE]: { id: "id" },
       [MutationType.COPY]: { id: "id", newid: "id" },
+      [MutationType.REORDER]: { id: "id", position: "reorderPosition" },
     },
     shortcut: "h",
     mouseCursor: "move",

@@ -18,6 +18,19 @@ const { logger, tracing } = observability;
 
 const STANDALONE_BOARD_BATCH_CHILD_COUNT_THRESHOLD = 64;
 
+/**
+ * @param {unknown} message
+ * @returns {message is {id: string, position: "front" | "back"}}
+ */
+function isReorderMessage(message) {
+  return (
+    !!message &&
+    typeof message === "object" &&
+    "position" in message &&
+    (message.position === "front" || message.position === "back")
+  );
+}
+
 /** @import { BoardData } from "./data.mjs" */
 /** @typedef {import("../../types/app-runtime.d.ts").BoardMessage} BoardMessage */
 /** @typedef {import("../../types/app-runtime.d.ts").ToolOwnedChildMessage} ToolOwnedChildMessage */
@@ -117,6 +130,7 @@ function collectHydrationIds(board, message) {
   switch (getMutationType(message)) {
     case MutationType.UPDATE:
     case MutationType.COPY:
+    case MutationType.REORDER:
       if (hasMessageId(message)) ids.add(message.id);
       break;
     case MutationType.APPEND:
@@ -167,6 +181,15 @@ async function preparePersistentMutation(board, message) {
         return { ok: true, mutation: message };
       }
       return { ok: false, reason: "shape too large" };
+    case MutationType.REORDER:
+      if (
+        !hasMessageId(message) ||
+        !getCanonicalItem(board, message.id) ||
+        !isReorderMessage(message)
+      ) {
+        return { ok: false, reason: "object not found" };
+      }
+      return { ok: true, mutation: message };
     default:
       return { ok: true, mutation: message };
   }
@@ -235,6 +258,10 @@ function canProcessMessage(board, message) {
       return id
         ? canUpdate(board, id, getUpdatableFields(message.tool, message))
         : false;
+    case MutationType.REORDER:
+      return id
+        ? !!getCanonicalItem(board, id) && isReorderMessage(message)
+        : false;
     case MutationType.COPY:
       return id ? canCopy(board, id, message) : false;
     case MutationType.APPEND:
@@ -275,6 +302,8 @@ function processMessageBatch(board, children, parentMessage) {
       );
       /** @type {Map<string, any | undefined>} */
       const overlay = new Map();
+      /** @type {{id: string, position: "front" | "back"}[]} */
+      const pendingReorders = [];
       let clearAll = false;
 
       /**
@@ -340,6 +369,16 @@ function processMessageBatch(board, children, parentMessage) {
             overlay.set(message.newid, validated.value);
             break;
           }
+          case MutationType.REORDER: {
+            if (!id || !isReorderMessage(message)) {
+              return { ok: false, reason: "missing id" };
+            }
+            if (!readItem(id)) {
+              return { ok: false, reason: "object not found" };
+            }
+            pendingReorders.push({ id, position: message.position });
+            break;
+          }
           case MutationType.APPEND: {
             if (!("parent" in message) || typeof message.parent !== "string") {
               return { ok: false, reason: "invalid parent for child" };
@@ -383,6 +422,7 @@ function processMessageBatch(board, children, parentMessage) {
         }
         board.liveItemCount = 0;
         board.trimPaintOrderIndex = board.paintOrder.length;
+        board.paintOrderDirty = false;
         board.svgExtent = createDefaultSvgExtent();
       }
       for (const [id, item] of overlay.entries()) {
@@ -392,7 +432,14 @@ function processMessageBatch(board, children, parentMessage) {
           board.upsertItem(item);
         }
       }
-      if (clearAll || overlay.size > 0) board.delaySave();
+      // Reorders take effect after every other mutation in the batch, in
+      // message order, so one batch describes one final stacking result.
+      if (pendingReorders.length > 0) {
+        const reorderResult = board.applyReorderGroup(pendingReorders);
+        if (reorderResult.ok === false) return reorderResult;
+      }
+      if (clearAll || overlay.size > 0 || pendingReorders.length > 0)
+        board.delaySave();
       return board.commitMutation();
     },
   );
@@ -425,6 +472,12 @@ function processMessage(board, message) {
         result = id
           ? board.copy(id, message)
           : { ok: false, reason: "missing id" };
+        break;
+      case MutationType.REORDER:
+        result =
+          id && isReorderMessage(message)
+            ? board.reorder([id], message.position)
+            : { ok: false, reason: "missing id" };
         break;
       case MutationType.APPEND: {
         if (!("parent" in message) || typeof message.parent !== "string") {
