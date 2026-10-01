@@ -3,6 +3,7 @@ import {
   getToolId,
   getMutationType,
   MutationType,
+  ReorderPosition,
 } from "../../client-data/js/message_tool_metadata.js";
 import { Cursor, TOOLS } from "../../client-data/tools/index.js";
 
@@ -36,7 +37,39 @@ import { Cursor, TOOLS } from "../../client-data/tools/index.js";
 /** @typedef {{[key: string]: FieldSpec}} FieldSchema */
 /** @typedef {{[tool: number]: {[type: number]: FieldSchema}}} LiveToolSchemas */
 /** @typedef {import("../../client-data/tools/shape_contract.js").ToolContract} ToolContract */
-/** @typedef {"id" | "coord" | "color" | "size" | "opacity" | "text" | "transform" | "time" | "toolId"} SchemaFieldType */
+/** @typedef {"id" | "coord" | "color" | "size" | "opacity" | "text" | "transform" | "time" | "toolId" | "reorderPosition" | "reorderIds"} SchemaFieldType */
+
+/**
+ * @param {unknown} value
+ * @returns {ValidationResult<number>}
+ */
+function normalizeReorderPosition(value) {
+  return value === ReorderPosition.FRONT || value === ReorderPosition.BACK
+    ? accepted(/** @type {number} */ (value))
+    : rejected("invalid reorder position");
+}
+
+/**
+ * @param {unknown} value
+ * @param {unknown} _raw
+ * @param {unknown} _normalized
+ * @param {number} _maxBoardSize
+ * @returns {ValidationResult<string[]>}
+ */
+function normalizeReorderIds(value, _raw, _normalized, _maxBoardSize) {
+  if (!Array.isArray(value) || value.length === 0) {
+    return rejected("expected non-empty array of ids");
+  }
+  /** @type {string[]} */
+  const ids = [];
+  for (const entry of value) {
+    const id = MessageCommon.normalizeId(entry);
+    if (id === null) return rejected("invalid id");
+    if (ids.includes(id)) return rejected("duplicate reorder id");
+    ids.push(id);
+  }
+  return accepted(ids);
+}
 
 const MAX_TOOL_CODE = TOOLS.length;
 const SHAPE_CONTRACTS = TOOLS.filter((tool) => tool.shapeTool === true);
@@ -305,6 +338,10 @@ function buildSchemaField(type, optionalField) {
       return make(normalizeTime);
     case "toolId":
       return make(normalizeToolId);
+    case "reorderPosition":
+      return make(normalizeReorderPosition);
+    case "reorderIds":
+      return make(normalizeReorderIds);
   }
 }
 

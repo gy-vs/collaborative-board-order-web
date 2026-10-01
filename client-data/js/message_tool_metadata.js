@@ -1,9 +1,13 @@
 import { TOOL_BY_CODE, TOOL_BY_ID, TOOL_IDS } from "../tools/manifest.js";
-import { getMutationTypeCode, MutationType } from "./mutation_type.js";
+import {
+  getMutationTypeCode,
+  MutationType,
+  ReorderPosition,
+} from "./mutation_type.js";
 
 /** @typedef {import("../../types/app-runtime").ToolCode} ToolCode */
 
-export { getMutationTypeCode, MutationType };
+export { getMutationTypeCode, MutationType, ReorderPosition };
 
 const MUTATION_TYPE_NAME_BY_CODE = Object.freeze({
   [MutationType.CREATE]: "create",
@@ -13,6 +17,7 @@ const MUTATION_TYPE_NAME_BY_CODE = Object.freeze({
   [MutationType.BATCH]: "batch",
   [MutationType.CLEAR]: "clear",
   [MutationType.COPY]: "copy",
+  [MutationType.REORDER]: "reorder",
 });
 
 /**

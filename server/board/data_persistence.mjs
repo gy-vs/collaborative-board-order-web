@@ -311,6 +311,7 @@ async function unsafeSaveBoard(board) {
         if (board.disposed) return { status: "skipped" };
         if (
           hasDirtyItems(board) !== true &&
+          board.paintOrderDirty !== true &&
           board.getSeq() === board.getPersistedSeq()
         ) {
           if (logger.isEnabled("debug")) {
@@ -333,6 +334,7 @@ async function unsafeSaveBoard(board) {
         const savedItemsById = new Map(board.itemsById);
         const savedPaintOrder = [...board.paintOrder];
         const savedSvgExtent = { ...board.svgExtent };
+        const savedPaintOrderDirty = board.paintOrderDirty === true;
         const file = board.file;
         const authoritativeItemCount = savedPaintOrder.filter(
           (id) => savedItemsById.get(id)?.deleted !== true,
@@ -364,6 +366,7 @@ async function unsafeSaveBoard(board) {
                       {
                         historyDir: board.historyDir,
                         svgExtent: savedSvgExtent,
+                        reorderPaintOrder: savedPaintOrderDirty,
                       },
                     )
                   : (
@@ -397,6 +400,7 @@ async function unsafeSaveBoard(board) {
           board.persistedItemIds = new Set(persistedIds);
           board.markPersistedSeq(saveTargetSeq);
           finalizePersistedItems(board, savedItemsById, persistedIds);
+          if (savedPaintOrderDirty) board.paintOrderDirty = false;
           finishSuccessfulSaveSchedulingWindow(board);
           board.trimPersistedMutationLog(startedAt);
           const savedFile = await stat(file).catch(async (error) => {

@@ -966,6 +966,52 @@ window.turnstile = {
     }, message);
   }
 
+  async readPaintOrder(): Promise<string[]> {
+    return this.page.evaluate(() =>
+      Array.from(document.getElementById("drawingArea")?.children ?? []).map(
+        (element) => element.id,
+      ),
+    );
+  }
+
+  async selectWithHandSelector(id: string) {
+    await this.waitForBoardWritable();
+    await this.page.evaluate((targetId) => {
+      const element = document.getElementById(targetId);
+      if (!element) throw new Error(`Missing shape ${targetId}`);
+      const tool = window.WBOApp.toolRegistry.current;
+      if (!tool || tool.name !== "hand" || tool.secondary?.active !== true) {
+        throw new Error("Hand selector is not active");
+      }
+      const bbox = (element as unknown as SVGGraphicsElement).getBBox();
+      const event = new MouseEvent("mousedown", {
+        bubbles: true,
+        cancelable: true,
+      });
+      Object.defineProperty(event, "target", { value: element });
+      tool.listeners.press?.(
+        bbox.x + bbox.width / 2,
+        bbox.y + bbox.height / 2,
+        event,
+        false,
+      );
+      tool.listeners.release?.(
+        bbox.x + bbox.width / 2,
+        bbox.y + bbox.height / 2,
+        event,
+        false,
+      );
+    }, id);
+    await expect(
+      this.page.locator("#selectionButton-bringFront"),
+    ).toBeVisible();
+  }
+
+  async clickSelectionAction(name: "bringFront" | "sendBack") {
+    await this.page.locator(`#selectionButton-${name}`).click();
+    await this.waitForBufferedWritesDrained();
+  }
+
   async drawRectangle(color: string, start: Point, end: Point, size = 11) {
     await this.waitForBoardWritable();
     await this.page.evaluate(

@@ -25,6 +25,11 @@ function addOptimisticAffectedIds(ids, message) {
     case MutationType.APPEND:
       ids.add(message.parent);
       return;
+    case MutationType.REORDER:
+      if (Array.isArray(message.ids)) {
+        for (const id of message.ids) ids.add(id);
+      }
+      return;
     case MutationType.CLEAR:
       return;
     default:
@@ -52,6 +57,11 @@ function addOptimisticDependencyIds(ids, message) {
     case MutationType.DELETE:
     case MutationType.UPDATE:
       if ("id" in message) ids.add(message.id);
+      return;
+    case MutationType.REORDER:
+      if (Array.isArray(message.ids)) {
+        for (const id of message.ids) ids.add(id);
+      }
       return;
     case MutationType.APPEND:
       ids.add(message.parent);

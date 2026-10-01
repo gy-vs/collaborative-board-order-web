@@ -11,7 +11,11 @@ import {
 } from "../../client-data/js/message_tool_metadata.js";
 import { Eraser } from "../../client-data/tools/index.js";
 import observability from "../observability/index.mjs";
-import { getCanonicalItem, removeCanonicalItem } from "./canonical_index.mjs";
+import {
+  getCanonicalItem,
+  removeCanonicalItem,
+  reorderCanonicalItems,
+} from "./canonical_index.mjs";
 import { createDefaultSvgExtent } from "./svg_extent.mjs";
 
 const { logger, tracing } = observability;
@@ -37,6 +41,26 @@ function boardTraceAttributes(boardName, operation, extras) {
     "wbo.board.operation": operation,
     ...extras,
   };
+}
+
+/** @param {unknown} position */
+function isReorderPosition(position) {
+  return position === 0 || position === 1;
+}
+
+/**
+ * @param {unknown} message
+ * @returns {message is {position: 0 | 1, ids: string[]}}
+ */
+function hasReorderPayload(message) {
+  const candidate = /** @type {{position?: unknown, ids?: unknown} | null} */ (
+    message
+  );
+  return (
+    isReorderPosition(candidate?.position) &&
+    Array.isArray(candidate?.ids) &&
+    candidate.ids.every((id) => typeof id === "string")
+  );
 }
 
 /** @param {string} id */
@@ -143,6 +167,14 @@ async function preparePersistentMutation(board, message) {
         return { ok: false, reason: "copied object does not exist" };
       }
       return { ok: true, mutation: message };
+    case MutationType.REORDER:
+      if (
+        !hasReorderPayload(message) ||
+        message.ids.some((id) => !getCanonicalItem(board, id))
+      ) {
+        return { ok: false, reason: "invalid reorder" };
+      }
+      return { ok: true, mutation: message };
     case MutationType.APPEND:
       if (
         !("parent" in message) ||
@@ -237,6 +269,11 @@ function canProcessMessage(board, message) {
         : false;
     case MutationType.COPY:
       return id ? canCopy(board, id, message) : false;
+    case MutationType.REORDER:
+      return !!(
+        hasReorderPayload(message) &&
+        message.ids.every((reorderId) => !!getCanonicalItem(board, reorderId))
+      );
     case MutationType.APPEND:
       return "parent" in message && typeof message.parent === "string"
         ? canAddChild(board, message.parent, message)
@@ -275,6 +312,8 @@ function processMessageBatch(board, children, parentMessage) {
       );
       /** @type {Map<string, any | undefined>} */
       const overlay = new Map();
+      /** @type {{ids: string[], position: 0 | 1}[]} */
+      const pendingReorders = [];
       let clearAll = false;
 
       /**
@@ -353,6 +392,21 @@ function processMessageBatch(board, children, parentMessage) {
             overlay.set(message.parent, next.value);
             break;
           }
+          case MutationType.REORDER: {
+            if (!hasReorderPayload(message)) {
+              return { ok: false, reason: "invalid reorder" };
+            }
+            if (message.ids.some((reorderId) => !readItem(reorderId))) {
+              return { ok: false, reason: "object not found" };
+            }
+            // Reordering is applied directly to the shared board state after the
+            // whole batch validates; record the requested move for commit time.
+            pendingReorders.push({
+              ids: message.ids,
+              position: /** @type {0 | 1} */ (message.position),
+            });
+            break;
+          }
           default: {
             if (!id) return { ok: false, reason: "missing id" };
             const validated = board.validateStoredCandidate(id, {
@@ -392,7 +446,18 @@ function processMessageBatch(board, children, parentMessage) {
           board.upsertItem(item);
         }
       }
-      if (clearAll || overlay.size > 0) board.delaySave();
+      for (const reorder of pendingReorders) {
+        const result = reorderCanonicalItems(
+          board,
+          reorder.ids,
+          reorder.position,
+        );
+        if (!result.ok) return result;
+        if (result.changed) board.paintOrderDirty = true;
+      }
+      if (clearAll || overlay.size > 0 || pendingReorders.length > 0) {
+        board.delaySave();
+      }
       return board.commitMutation();
     },
   );
@@ -441,6 +506,11 @@ function processMessage(board, message) {
       }
       case MutationType.CLEAR:
         result = board.clear();
+        break;
+      case MutationType.REORDER:
+        result = hasReorderPayload(message)
+          ? board.reorder(message.ids, message.position)
+          : { ok: false, reason: "invalid reorder" };
         break;
       default:
         if (id) {

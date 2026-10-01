@@ -1149,6 +1149,122 @@ test("rewriteStoredSvgFromCanonical reuses raw persisted pencil paths for copied
   });
 });
 
+test("rewriteStoredSvgFromCanonical rewrites clean items in canonical paint order", {
+  concurrency: false,
+}, async () => {
+  const historyDir = await fs.mkdtemp(
+    path.join(os.tmpdir(), "wbo-svg-store-reorder-"),
+  );
+  const boardName = "paint-reorder";
+  const storedSvg =
+    '<svg id="canvas" xmlns="http://www.w3.org/2000/svg" version="1.1" width="5000" height="5000" data-wbo-format="whitebophir-svg-v2" data-wbo-seq="3" data-wbo-readonly="false">' +
+    '<defs id="defs"></defs>' +
+    '<g id="drawingArea">' +
+    '<rect id="rect-1" x="0" y="0" width="10" height="10" stroke="#112233" stroke-width="4"></rect>' +
+    '<rect id="rect-2" x="20" y="20" width="10" height="10" stroke="#445566" stroke-width="4"></rect>' +
+    '<path id="line-1" d="M 1 2 l 2 2" stroke="#123456" stroke-width="4" fill="none" stroke-linecap="round" stroke-linejoin="round"></path>' +
+    "</g>" +
+    '<g id="cursors"></g>' +
+    "</svg>";
+
+  await withEnv({ WBO_HISTORY_DIR: historyDir }, async () => {
+    await fs.writeFile(svgPath(boardName, historyDir), storedSvg, "utf8");
+
+    const state = await readCanonicalBoardState(boardName, historyDir);
+    const persistedItemIds = new Set(state.itemsById.keys());
+
+    // Move the first item above everything: none of the items are dirty, so
+    // the rewrite must copy their stored tags verbatim in the new order.
+    state.paintOrder = ["rect-2", "line-1", "rect-1"];
+
+    const persistedIds = await svgBoardStore.rewriteStoredSvgFromCanonical(
+      boardName,
+      state.itemsById,
+      state.paintOrder,
+      state.metadata,
+      persistedItemIds,
+      state.seq,
+      state.seq + 1,
+      { historyDir, reorderPaintOrder: true },
+    );
+
+    const rewritten = await fs.readFile(svgPath(boardName, historyDir), "utf8");
+    assert.deepEqual([...persistedIds].sort(), ["line-1", "rect-1", "rect-2"]);
+    const positions = /** @type {number[]} */ (
+      ["rect-2", "line-1", "rect-1"].map((id) =>
+        rewritten.indexOf(`id="${id}"`),
+      )
+    );
+    assert.ok(positions.every((position) => position >= 0));
+    assert.ok(
+      /** @type {number} */ (positions[0]) <
+        /** @type {number} */ (positions[1]) &&
+        /** @type {number} */ (positions[1]) <
+          /** @type {number} */ (positions[2]),
+    );
+    // The untouched pencil path is preserved byte-for-byte.
+    assert.match(rewritten, /d="M 1 2 l 2 2"/);
+
+    // The new stacking survives a fresh load and the served baseline keeps it.
+    const reloaded = await readCanonicalBoardState(boardName, historyDir);
+    assert.deepEqual(reloaded.paintOrder, ["rect-2", "line-1", "rect-1"]);
+    const baseline = await readServedBaseline(boardName, historyDir);
+    assert.ok(
+      baseline.indexOf('id="rect-2"') < baseline.indexOf('id="line-1"') &&
+        baseline.indexOf('id="line-1"') < baseline.indexOf('id="rect-1"'),
+    );
+  });
+});
+
+test("rewriteStoredSvgFromCanonical reorders and re-serializes dirty items in one save", {
+  concurrency: false,
+}, async () => {
+  const historyDir = await fs.mkdtemp(
+    path.join(os.tmpdir(), "wbo-svg-store-reorder-dirty-"),
+  );
+  const boardName = "paint-reorder-dirty";
+  const storedSvg =
+    '<svg id="canvas" xmlns="http://www.w3.org/2000/svg" version="1.1" width="5000" height="5000" data-wbo-format="whitebophir-svg-v2" data-wbo-seq="3" data-wbo-readonly="false">' +
+    '<defs id="defs"></defs>' +
+    '<g id="drawingArea">' +
+    '<text id="text-1" x="5" y="6" font-size="18" fill="#654321">hello</text>' +
+    '<rect id="rect-2" x="20" y="20" width="10" height="10" stroke="#445566" stroke-width="4"></rect>' +
+    "</g>" +
+    '<g id="cursors"></g>' +
+    "</svg>";
+
+  await withEnv({ WBO_HISTORY_DIR: historyDir }, async () => {
+    await fs.writeFile(svgPath(boardName, historyDir), storedSvg, "utf8");
+
+    const state = await readCanonicalBoardState(boardName, historyDir);
+    const persistedItemIds = new Set(state.itemsById.keys());
+    state.paintOrder = ["rect-2", "text-1"];
+
+    const persistedIds = await svgBoardStore.rewriteStoredSvgFromCanonical(
+      boardName,
+      state.itemsById,
+      state.paintOrder,
+      state.metadata,
+      persistedItemIds,
+      state.seq,
+      state.seq + 1,
+      { historyDir, reorderPaintOrder: true },
+    );
+
+    const rewritten = await fs.readFile(svgPath(boardName, historyDir), "utf8");
+    assert.deepEqual([...persistedIds].sort(), ["rect-2", "text-1"]);
+    assert.ok(
+      rewritten.indexOf('id="rect-2"') < rewritten.indexOf('id="text-1"'),
+    );
+    // The clean text keeps its stored content verbatim even though the
+    // scanner stayed opaque.
+    assert.match(rewritten, />hello</);
+
+    const reloaded = await readCanonicalBoardState(boardName, historyDir);
+    assert.deepEqual(reloaded.paintOrder, ["rect-2", "text-1"]);
+  });
+});
+
 test("rewriteStoredSvg rejects stored svg base-seq mismatches", async () => {
   const historyDir = await fs.mkdtemp(
     path.join(os.tmpdir(), "wbo-svg-store-rewrite-seq-mismatch-"),

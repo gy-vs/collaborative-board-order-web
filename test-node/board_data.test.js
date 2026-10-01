@@ -224,6 +224,15 @@ function handCopy(id, newid) {
 }
 
 /**
+ * @param {string[]} ids
+ * @param {0 | 1} position
+ * @returns {any}
+ */
+function handReorder(ids, position) {
+  return { tool: Hand.id, type: MutationType.REORDER, ids, position };
+}
+
+/**
  * @param {string} id
  * @returns {any}
  */
@@ -715,6 +724,145 @@ test("BoardData keeps paint order stable when updating existing items", () => {
   assert.equal(board.paintOrder.length, 2);
 });
 
+test("BoardData reorder moves items to the front or back without changing identity", () => {
+  const BoardData = getBoardDataClass();
+  const board = disableSaves(createBoard(BoardData, "reorder-moves"));
+
+  assertMessagesAccepted(board, [
+    rectangleMessage("rect-1", "#112233", 4, 0, 0, 10, 10),
+    rectangleMessage("rect-2", "#445566", 4, 20, 20, 30, 30),
+    rectangleMessage("rect-3", "#778899", 4, 40, 40, 50, 50),
+  ]);
+
+  assert.equal(board.processMessage(handReorder(["rect-1"], 1)).ok, true);
+  assert.deepEqual(board.paintOrder, ["rect-2", "rect-3", "rect-1"]);
+  assert.equal(board.paintOrderDirty, true);
+
+  // The moved item keeps its geometry and attributes.
+  const moved = board.get("rect-1");
+  assert.equal(moved.id, "rect-1");
+  assert.equal(moved.color, "#112233");
+
+  board.paintOrderDirty = false;
+  assert.equal(board.processMessage(handReorder(["rect-2"], 0)).ok, true);
+  assert.deepEqual(board.paintOrder, ["rect-2", "rect-3", "rect-1"]);
+
+  // Moving the already-first item to the back is a no-op on order and flag.
+  assert.equal(board.processMessage(handReorder(["rect-2"], 0)).ok, true);
+  assert.deepEqual(board.paintOrder, ["rect-2", "rect-3", "rect-1"]);
+  assert.equal(board.paintOrderDirty, false);
+
+  // Moving the already-last item to the front is also a no-op.
+  assert.equal(board.processMessage(handReorder(["rect-1"], 1)).ok, true);
+  assert.deepEqual(board.paintOrder, ["rect-2", "rect-3", "rect-1"]);
+  assert.equal(board.paintOrderDirty, false);
+});
+
+test("BoardData group reorder keeps the selection's internal stacking", () => {
+  const BoardData = getBoardDataClass();
+  const board = disableSaves(createBoard(BoardData, "reorder-group"));
+
+  assertMessagesAccepted(board, [
+    rectangleMessage("rect-1", "#112233", 4, 0, 0, 10, 10),
+    rectangleMessage("rect-2", "#445566", 4, 20, 20, 30, 30),
+    rectangleMessage("rect-3", "#778899", 4, 40, 40, 50, 50),
+    rectangleMessage("rect-4", "#aabbcc", 4, 60, 60, 70, 70),
+  ]);
+
+  // Move rect-1 and rect-3 as a group to the front; their relative order must
+  // stay rect-1 below rect-3.
+  assert.equal(
+    board.processMessage(handReorder(["rect-1", "rect-3"], 1)).ok,
+    true,
+  );
+  assert.deepEqual(board.paintOrder, ["rect-2", "rect-4", "rect-1", "rect-3"]);
+
+  // Send the same group back together.
+  assert.equal(
+    board.processMessage(handReorder(["rect-1", "rect-3"], 0)).ok,
+    true,
+  );
+  assert.deepEqual(board.paintOrder, ["rect-1", "rect-3", "rect-2", "rect-4"]);
+
+  // Ids out of document order are applied in document order.
+  assert.equal(
+    board.processMessage(handReorder(["rect-4", "rect-2"], 1)).ok,
+    true,
+  );
+  assert.deepEqual(board.paintOrder, ["rect-1", "rect-3", "rect-2", "rect-4"]);
+});
+
+test("BoardData reorder rejects unknown items and invalid positions", () => {
+  const BoardData = getBoardDataClass();
+  const board = disableSaves(createBoard(BoardData, "reorder-rejects"));
+  assertMessagesAccepted(board, [
+    rectangleMessage("rect-1", "#112233", 4, 0, 0, 10, 10),
+  ]);
+
+  assert.equal(board.processMessage(handReorder(["missing"], 1)).ok, false);
+  assert.equal(
+    board.processMessage({
+      tool: Hand.id,
+      type: MutationType.REORDER,
+      ids: ["rect-1"],
+    }).ok,
+    false,
+  );
+  assert.equal(
+    board.processMessage({
+      tool: Hand.id,
+      type: MutationType.REORDER,
+      ids: ["rect-1"],
+      position: 2,
+    }).ok,
+    false,
+  );
+  assert.equal(
+    board.processMessage({
+      tool: Hand.id,
+      type: MutationType.REORDER,
+      ids: [],
+      position: 1,
+    }).ok,
+    false,
+  );
+  assert.equal(
+    board.processMessage({
+      tool: Hand.id,
+      type: MutationType.REORDER,
+      ids: ["rect-1", "rect-1"],
+      position: 1,
+    }).ok,
+    false,
+  );
+});
+
+test("BoardData single and batched reorder mutations converge to the same order", () => {
+  const BoardData = getBoardDataClass();
+  const single = disableSaves(createBoard(BoardData, "reorder-single"));
+  const batch = disableSaves(createBoard(BoardData, "reorder-batch"));
+
+  const setup = [
+    rectangleMessage("rect-1", "#112233", 4, 0, 0, 10, 10),
+    rectangleMessage("rect-2", "#445566", 4, 20, 20, 30, 30),
+    rectangleMessage("rect-3", "#778899", 4, 40, 40, 50, 50),
+  ];
+  assertMessagesAccepted(single, setup);
+  assertMessagesAccepted(batch, setup);
+
+  const mutations = [handReorder(["rect-3"], 0), handReorder(["rect-1"], 1)];
+  for (const mutation of mutations) {
+    assert.equal(single.processMessage(mutation).ok, true);
+  }
+  assert.equal(
+    batch.processMessage({ tool: Hand.id, _children: mutations }).ok,
+    true,
+  );
+
+  assert.deepEqual(single.paintOrder, batch.paintOrder);
+  assert.deepEqual(single.paintOrder, ["rect-3", "rect-2", "rect-1"]);
+});
+
 test("BoardData applies parent tool metadata to batched Hand updates", () => {
   const BoardData = getBoardDataClass();
   const board = disableSaves(createBoard(BoardData, "hand-batch-board"));
@@ -1195,6 +1343,51 @@ test("BoardData persists corrected svg root extent for deep-link reloads", async
         createConfig({ HISTORY_DIR: historyDir }),
       );
       assert.deepEqual(reloaded.svgExtent, { width: 107544, height: 107544 });
+    },
+  );
+});
+
+test("BoardData persists accepted reorder mutations and keeps them after reload", async () => {
+  await withBoardHistoryDir(
+    "wbo-board-reorder-persist-",
+    async ({ historyDir }) => {
+      const BoardData = getBoardDataClass();
+      const config = createConfig({ HISTORY_DIR: historyDir });
+      const board = createBoard(BoardData, "reorder-persist", config);
+
+      const messages = [
+        rectangleMessage("rect-1", "#112233", 4, 0, 0, 10, 10),
+        rectangleMessage("rect-2", "#445566", 4, 20, 20, 30, 30),
+        rectangleMessage("rect-3", "#778899", 4, 40, 40, 50, 50),
+      ];
+      for (const [index, message] of messages.entries()) {
+        await applyPersistentMutation(board, message, index + 1);
+      }
+
+      const reorder = {
+        tool: Hand.id,
+        _children: [
+          {
+            type: MutationType.REORDER,
+            ids: ["rect-3", "rect-1"],
+            position: 0,
+          },
+          { type: MutationType.REORDER, ids: ["rect-1"], position: 1 },
+        ],
+      };
+      assert.equal(board.processMessage(reorder).ok, true);
+      board.recordPersistentMutation(reorder, messages.length + 1);
+      assert.deepEqual(board.paintOrder, ["rect-3", "rect-2", "rect-1"]);
+
+      clearTimeout(board.saveTimeoutId);
+      board.saveTimeoutId = undefined;
+      assert.deepEqual(await board.save(), { status: "saved" });
+
+      const reloaded = await loadBoard(BoardData, "reorder-persist", config);
+      assert.deepEqual(reloaded.paintOrder, ["rect-3", "rect-2", "rect-1"]);
+      // Content and identity are preserved.
+      assert.equal(reloaded.get("rect-1")?.color, "#112233");
+      assert.equal(reloaded.get("rect-3")?.color, "#778899");
     },
   );
 });

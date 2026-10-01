@@ -43,6 +43,7 @@ import {
   getCanonicalItem,
   rebuildLiveItemCount,
   removeCanonicalItem,
+  reorderCanonicalItems,
   upsertCanonicalItem,
 } from "./canonical_index.mjs";
 import {
@@ -215,6 +216,13 @@ class BoardData {
     /** @type {string[]} */
     this.paintOrder = [];
     this.nextPaintOrder = 0;
+    /**
+     * True when the paint order itself has changed since the last save: the
+     * stored SVG must then be rewritten in canonical order, not streamed in
+     * file order.
+     * @type {boolean}
+     */
+    this.paintOrderDirty = false;
     this.liveItemCount = 0;
     this.trimPaintOrderIndex = 0;
     /** @type {SvgExtent} */
@@ -240,6 +248,7 @@ class BoardData {
     this.itemsById = new Map();
     this.paintOrder = [];
     this.nextPaintOrder = 0;
+    this.paintOrderDirty = false;
     this.persistedItemIds = new Set();
     this.dirtyFromMs = null;
     this.lastWriteAtMs = null;
@@ -853,6 +862,19 @@ class BoardData {
     return this.commitMutation();
   }
 
+  /** Moves elements to the front or the back of the paint order as a group.
+   * @param {string[]} ids - Identifiers of the items to move, in paint order.
+   * @param {0 | 1} position - 0 sends the group to the back, 1 brings it front.
+   * @returns {BoardMutationResult}
+   */
+  reorder(ids, position) {
+    const result = reorderCanonicalItems(this, ids, position);
+    if (!result.ok) return result;
+    if (result.changed) this.paintOrderDirty = true;
+    this.delaySave();
+    return this.commitMutation();
+  }
+
   /** Clear the board of all data
    * @returns {ValidationSuccess}
    */
@@ -866,6 +888,7 @@ class BoardData {
     }
     this.liveItemCount = 0;
     this.trimPaintOrderIndex = this.paintOrder.length;
+    this.paintOrderDirty = false;
     this.svgExtent = createDefaultSvgExtent();
     this.delaySave();
     return this.commitMutation();

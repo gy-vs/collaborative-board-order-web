@@ -851,6 +851,187 @@ function collectCopySourceIds(itemsById) {
  * @param {{historyDir?: string, svgExtent?: SvgExtent}=} [options]
  * @returns {Promise<Set<string>>}
  */
+/**
+ * Rewrites the stored SVG with items in canonical paint order. Used after a
+ * REORDER mutation, where streaming the old file in document order would keep
+ * the stale stacking. Clean items are copied through with their stored raw tag
+ * so persisted pencil paths and text contents never need to be re-serialized;
+ * dirty or new items are serialized from canonical state.
+ *
+ * @param {string} boardName
+ * @param {Map<string, any>} itemsById
+ * @param {string[]} paintOrder
+ * @param {BoardMetadata} metadata
+ * @param {Set<string>} persistedItemIds
+ * @param {number} persistedSeq
+ * @param {number} latestSeq
+ * @param {{historyDir?: string, svgExtent?: SvgExtent}} options
+ * @returns {Promise<Set<string>>}
+ */
+async function rewriteStoredSvgInPaintOrder(
+  boardName,
+  itemsById,
+  paintOrder,
+  metadata,
+  persistedItemIds,
+  persistedSeq,
+  latestSeq,
+  options,
+) {
+  const historyDir = options.historyDir;
+  const file = boardSvgPath(boardName, historyDir);
+  const backupFile = boardSvgBackupPath(boardName, historyDir);
+  const tmpFile = createTempSvgPath(backupFile);
+  const sourceFile = (await fileExists(file)) ? file : backupFile;
+  const input = fs.createReadStream(sourceFile, { encoding: "utf8" });
+  const output = fs.createWriteStream(tmpFile, {
+    encoding: "utf8",
+    flags: "wx",
+  });
+  /** @type {Map<string, string>} Raw stored tag per live persisted item id. */
+  const rawTagsById = new Map();
+  /** @type {Map<string, string>} Leading whitespace preceding each item. */
+  const leadingTextById = new Map();
+  const copySourceIds = collectCopySourceIds(itemsById);
+  const bufferedTextContents = new Map();
+  const bufferedPencilPaths = new Map();
+  const persistedIds = new Set();
+  /**
+   * @param {string} chunk
+   * @returns {Promise<void>}
+   */
+  const writeChunk = async (chunk) => {
+    if (!output.write(chunk)) await once(output, "drain");
+  };
+
+  try {
+    for await (const event of streamStoredSvgStructure(input, {
+      materializeEntryDetails: false,
+    })) {
+      if (event.type === "prefix") {
+        const currentSeq = readStoredSvgRootMetadata(event.prefix).seq;
+        if (currentSeq !== persistedSeq) {
+          throw createStoredSvgSeqMismatchError(persistedSeq, currentSeq);
+        }
+        await writeChunk(
+          updateRootMetadata(
+            event.prefix,
+            metadata,
+            latestSeq,
+            options.svgExtent,
+          ),
+        );
+        continue;
+      }
+      if (event.type === "tail") {
+        await writeChunk(event.chunk);
+        continue;
+      }
+      if (event.type === "suffix") {
+        // Emit every live item in canonical order, choosing between its
+        // untouched stored tag and a freshly serialized one.
+        for (const id of paintOrder) {
+          const item = itemsById.get(id);
+          if (!item || item.deleted === true) continue;
+          const wasPersisted = persistedItemIds.has(id);
+          let tag;
+          if (wasPersisted && item.dirty !== true) {
+            tag = rawTagsById.get(id);
+          }
+          if (tag === undefined) {
+            tag = serializeCanonicalItemForStorage(item, {
+              sourceText: needsStoredTextSource(item)
+                ? bufferedTextContents.get(id)
+                : item.copySource
+                  ? bufferedTextContents.get(item.copySource.sourceId)
+                  : undefined,
+              sourcePath: needsStoredPencilPath(item, wasPersisted)
+                ? bufferedPencilPaths.get(id)
+                : item.copySource
+                  ? bufferedPencilPaths.get(item.copySource.sourceId)
+                  : undefined,
+              isPersistedItem: wasPersisted,
+            });
+          }
+          if (!tag) continue;
+          persistedIds.add(id);
+          await writeChunk((leadingTextById.get(id) || "") + tag);
+        }
+        await writeChunk(event.leadingText + event.suffix);
+        continue;
+      }
+
+      const id = event.entry.id;
+      if (typeof id !== "string") continue;
+      const item = itemsById.get(id);
+      if (copySourceIds.has(id)) {
+        const copyPayloadKind = item?.payload?.kind;
+        if (copyPayloadKind === "text") {
+          const sourceText = readStoredTextContent(event.entry);
+          if (sourceText !== undefined) {
+            bufferedTextContents.set(id, sourceText);
+          }
+        } else if (copyPayloadKind === "children") {
+          const sourcePath = readStoredPencilPath(event.entry);
+          if (sourcePath !== undefined) {
+            bufferedPencilPaths.set(id, sourcePath);
+          }
+        }
+      }
+      if (!item || item.deleted === true || !persistedItemIds.has(id)) {
+        continue;
+      }
+      rawTagsById.set(id, event.entry.raw);
+      leadingTextById.set(id, event.leadingText);
+      // Paint-order rewrites must re-serialize dirty items too. Opaque stream
+      // entries hide their content, so capture the raw text/pencil payload of
+      // any dirty item before emitting the drawing area in the new order.
+      if (item.dirty === true) {
+        if (needsStoredTextSource(item)) {
+          const sourceText = readStoredTextContent(event.entry);
+          if (sourceText !== undefined) {
+            bufferedTextContents.set(id, sourceText);
+          }
+        }
+        if (needsStoredPencilPath(item, true)) {
+          const sourcePath = readStoredPencilPath(event.entry);
+          if (sourcePath !== undefined) {
+            bufferedPencilPaths.set(id, sourcePath);
+          }
+        }
+      }
+    }
+    await new Promise((resolve, reject) => {
+      output.on("error", reject);
+      output.end(resolve);
+    });
+  } catch (error) {
+    input.destroy();
+    output.destroy();
+    await fs.promises.rm(tmpFile, { force: true });
+    throw error;
+  }
+
+  await rename(tmpFile, backupFile);
+  await rename(backupFile, file);
+  return persistedIds;
+}
+
+/**
+ * Streams the stored SVG, preserving clean persisted items verbatim and
+ * rewriting dirty or appending new ones. When `options.reorderPaintOrder` is
+ * set the whole drawing area is emitted in canonical paint order.
+ *
+ * @param {string} boardName
+ * @param {Map<string, any>} itemsById
+ * @param {string[]} paintOrder
+ * @param {BoardMetadata} metadata
+ * @param {Set<string>} persistedItemIds
+ * @param {number} persistedSeq
+ * @param {number} latestSeq
+ * @param {{historyDir?: string, svgExtent?: SvgExtent, reorderPaintOrder?: boolean}} options
+ * @returns {Promise<Set<string>>}
+ */
 async function rewriteStoredSvgFromCanonical(
   boardName,
   itemsById,
@@ -861,6 +1042,18 @@ async function rewriteStoredSvgFromCanonical(
   latestSeq,
   options,
 ) {
+  if (options?.reorderPaintOrder === true) {
+    return rewriteStoredSvgInPaintOrder(
+      boardName,
+      itemsById,
+      paintOrder,
+      metadata,
+      persistedItemIds,
+      persistedSeq,
+      latestSeq,
+      options,
+    );
+  }
   const historyDir = options?.historyDir;
   const file = boardSvgPath(boardName, historyDir);
   const backupFile = boardSvgBackupPath(boardName, historyDir);

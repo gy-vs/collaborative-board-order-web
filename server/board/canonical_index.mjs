@@ -151,6 +151,52 @@ function finalizePersistedCanonicalItems(
   };
 }
 
+/**
+ * Moves a group of live items together to the front or the back of the paint
+ * order while keeping their relative order. The persisted SVG is
+ * order-significant, so callers must flag `state.paintOrderDirty = true` when
+ * the order actually changes. Item identity, geometry, and attributes are
+ * preserved.
+ *
+ * @param {{
+ *   itemsById: Map<string, any>,
+ *   paintOrder: string[],
+ *   nextPaintOrder: number,
+ * }} state
+ * @param {string[]} ids ids to move, already in their current paint order
+ * @param {0 | 1} position 0 sends the group to the back, 1 brings it to front
+ * @returns {{ok: true, changed: boolean} | {ok: false, reason: string}}
+ */
+function reorderCanonicalItems(state, ids, position) {
+  if (!Array.isArray(ids) || ids.length === 0) {
+    return { ok: false, reason: "invalid reorder" };
+  }
+  const selected = new Set(ids);
+  if (selected.size !== ids.length) {
+    return { ok: false, reason: "duplicate reorder id" };
+  }
+  for (const id of ids) {
+    if (!getCanonicalItem(state, id) || !state.paintOrder.includes(id)) {
+      return { ok: false, reason: "object not found" };
+    }
+  }
+  const moved = state.paintOrder.filter((id) => selected.has(id));
+  const others = state.paintOrder.filter((id) => !selected.has(id));
+  const nextOrder =
+    position === 1 ? others.concat(moved) : moved.concat(others);
+  if (nextOrder.every((id, index) => state.paintOrder[index] === id)) {
+    return { ok: true, changed: false };
+  }
+  state.paintOrder = nextOrder;
+  nextOrder.forEach((orderedId, index) => {
+    const orderedItem = state.itemsById.get(orderedId);
+    if (!orderedItem || orderedItem.paintOrder === index) return;
+    state.itemsById.set(orderedId, { ...orderedItem, paintOrder: index });
+  });
+  state.nextPaintOrder = Math.max(state.nextPaintOrder, nextOrder.length);
+  return { ok: true, changed: true };
+}
+
 export {
   authoritativeItemCount,
   cloneBounds,
@@ -158,5 +204,6 @@ export {
   getCanonicalItem,
   rebuildLiveItemCount,
   removeCanonicalItem,
+  reorderCanonicalItems,
   upsertCanonicalItem,
 };

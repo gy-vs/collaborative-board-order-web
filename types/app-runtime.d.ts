@@ -114,6 +114,9 @@ export type HandDeleteMessage = WithMessageMetadata<HandTool.HandDeleteMessage>;
 
 export type HandCopyMessage = WithMessageMetadata<HandTool.HandCopyMessage>;
 
+export type HandReorderMessage =
+  WithMessageMetadata<HandTool.HandReorderMessage>;
+
 export type HandBatchMessage = WithMessageMetadata<HandTool.HandBatchMessage>;
 
 export type HandDrawMessage = HandTool.HandDrawMessage;
@@ -139,6 +142,7 @@ export type BoardMessage =
   | HandUpdateMessage
   | HandDeleteMessage
   | HandCopyMessage
+  | HandReorderMessage
   | HandBatchMessage
   | ClearMessage
   | CursorMessage;

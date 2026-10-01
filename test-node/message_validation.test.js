@@ -128,6 +128,58 @@ test("normalizeIncomingMessage rejects malformed hand batches atomically", () =>
   assert.match(normalized.reason, /_children\[1\]/);
 });
 
+test("normalizeIncomingMessage accepts well-formed hand reorder batches", () => {
+  assert.deepEqual(
+    normalizeIncomingMessage({
+      tool: Hand.id,
+      _children: [
+        { type: MutationType.REORDER, ids: ["r1", "r2"], position: 1 },
+        { type: MutationType.REORDER, ids: ["r3"], position: 0 },
+      ],
+    }),
+    {
+      ok: true,
+      value: {
+        tool: Hand.id,
+        _children: [
+          { type: MutationType.REORDER, ids: ["r1", "r2"], position: 1 },
+          { type: MutationType.REORDER, ids: ["r3"], position: 0 },
+        ],
+      },
+    },
+  );
+});
+
+test("normalizeIncomingMessage rejects hand reorder children with bad payloads", () => {
+  const missingIds = normalizeIncomingMessage({
+    tool: Hand.id,
+    _children: [{ type: MutationType.REORDER, position: 1 }],
+  });
+  assert.equal(missingIds.ok, false);
+  assert.match(missingIds.reason, /_children\[0\]/);
+
+  const emptyIds = normalizeIncomingMessage({
+    tool: Hand.id,
+    _children: [{ type: MutationType.REORDER, ids: [], position: 1 }],
+  });
+  assert.equal(emptyIds.ok, false);
+  assert.match(emptyIds.reason, /ids/);
+
+  const duplicateIds = normalizeIncomingMessage({
+    tool: Hand.id,
+    _children: [{ type: MutationType.REORDER, ids: ["r1", "r1"], position: 1 }],
+  });
+  assert.equal(duplicateIds.ok, false);
+  assert.match(duplicateIds.reason, /duplicate/);
+
+  const invalidPosition = normalizeIncomingMessage({
+    tool: Hand.id,
+    _children: [{ type: MutationType.REORDER, ids: ["r1"], position: 2 }],
+  });
+  assert.equal(invalidPosition.ok, false);
+  assert.match(invalidPosition.reason, /position/);
+});
+
 test("normalizeIncomingMessage rejects messages without a tool", () => {
   assert.deepEqual(
     normalizeIncomingMessage({
